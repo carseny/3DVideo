@@ -3,21 +3,20 @@ import numpy as np
 import shlex
 import cv2
 from noise import pnoise3, snoise3
-from scipy.stats import norm
 
 
 class Noise:
-    def __init__(self, width, height, scale=10.0, t_scale=10.0, octaves=1):
-        self.width = width
+    def __init__(self, height, width, scale=10.0, t_scale=10.0, octaves=1):
         self.height = height
+        self.width = width
         self.scale = scale
         self.t_scale = t_scale
         self.octaves = octaves
         self.x, self.y, self.t = np.random.rand(3) * 10000
 
         # 向量化计算噪声
-        self.v_pnoise2 = np.vectorize(
-            lambda x, y, t: pnoise3(x, y, t, octaves=self.octaves)
+        self.v_noise3 = np.vectorize(
+            lambda x, y, t: snoise3(x, y, t, octaves=self.octaves)
         )
 
         # # 生成坐标网格
@@ -42,84 +41,16 @@ class Noise:
         y = np.arange(self.height) / self.scale + y
         xx, yy = np.meshgrid(x, y)
         if mask is None:
-            noise = self.v_pnoise2(xx, yy, t)
+            noise = self.v_noise3(xx, yy, t)
         else:
-            # 生成噪声图
             noise = np.zeros((self.height, self.width))
-            noise[mask] = self.v_pnoise2(xx[mask], yy[mask])
+            if mask.any():
+                noise[mask] += self.v_noise3(xx[mask], yy[mask], t)
         return noise
 
     def next(self, mask: np.ndarray | None = None) -> np.ndarray:
         self.t += 1 / self.t_scale
         return self.get(self.x, self.y, self.t, mask=mask)
-
-
-class StereoVideo:
-    def __init__(self, h: int, w: int, fps: float, shift=None):
-        scale = min(h, w)
-        if shift is None:
-            shift = scale // 60
-            
-        self.height = h
-        self.width = w
-        self.shift = shift
-        n = 4
-        self.boundary = list(np.linspace(0, 1, num=2**n)) + [1]
-        
-        self.noiser = Noise(w, h, scale * 0.13, fps * 0.5)
-        # self.noisers = [Noise(w, h, scale * 0.13, fps * 0.5) for _ in range(n)]
-
-        image_noise = Noise(w, h, scale=scale * 0.01)
-        images = [
-            np.stack(
-                [(image_noise.get(t=t) * 128 + 128).astype(np.uint8) for t in rgb],
-                axis=-1,
-            )
-            for rgb in (np.random.rand(2**n * 2, 3) * 10000)
-        ]
-        # images = np.random.randint(
-        #     0, 256, size=(2**n * 2, h, w, 3), dtype=np.uint8
-        # )
-        self.front_images = images[: 2**n]
-        self.back_images = images[2**n :]
-
-        coords = np.empty((h, w, 2), dtype=np.float64)
-        coords[..., 0] = np.arange(h)[:, None]  # 列索引作为x坐标
-        coords[..., 1] = np.arange(w)  # 行索引作为y坐标
-        self.anchor = (
-            (coords - np.asarray([scale * 0.02, w / 2])[None, None]) ** 2
-        ).sum(axis=-1) < (
-            scale * 0.015
-        ) ** 2  # 生成圆形视角锚点
-
-    def step(self, mask: np.ndarray):
-        noise = np.broadcast_to(
-            self.noiser.next()[..., None], (self.height, self.width, 3)
-        )
-        noise = norm.cdf(noise, loc=0, scale=1 / 2)
-
-        cv2.imshow("noise", noise)
-        cv2.waitKey(1)
-
-        condlist = []
-        for lower, upper in zip(self.boundary[:-1], self.boundary[1:]):
-            condlist.append(np.logical_and(lower <= noise, noise < upper))
-        back_image = np.select(condlist, list(self.back_images))
-        front_image = np.select(condlist, list(self.front_images))
-
-        tmp = np.hstack((back_image, back_image))
-        left = tmp[:, : self.width, :]
-        right = tmp[:, self.width :, :]
-
-        left[mask] = front_image[mask]
-        res_w = self.width - self.shift
-        res_mask = mask[:, :res_w]
-        right[:, :res_w, :][res_mask] = front_image[:, self.shift :, :][res_mask]
-
-        left[self.anchor] = 255
-        right[self.anchor] = 255
-
-        return tmp
 
 
 def generate_coords(m, n) -> np.ndarray:
@@ -129,6 +60,59 @@ def generate_coords(m, n) -> np.ndarray:
     return coords
 
 
+class DualVideo:
+    def __init__(self, h: int, w: int, fps: float, shift=None):
+        scale = min(h, w)
+        if shift is None:
+            shift = scale // 60
+
+        self.height = h
+        self.width = w
+        self.shift = shift
+        self.fps = fps
+
+        self.back_noises = [
+            Noise(h, w, scale * 0.02, fps * 0.2, 4) for _ in range(3)  # rgb
+        ]
+        self.front_noises = [
+            Noise(h, w, scale * 0.02, fps * 0.2, 4) for _ in range(3)  # rgb
+        ]
+
+        coords = generate_coords(h, w)
+        self.anchor = (
+            (coords - np.asarray([scale * 0.02, w / 2])[None, None]) ** 2
+        ).sum(axis=-1) < (
+            scale * 0.015
+        ) ** 2  # 生成圆形视角锚点
+
+    def step(self, frame: np.ndarray):
+        mask = frame >= (1 / self.shift)
+        back_image = (
+            np.stack([n.next() for n in self.back_noises], axis=2) * 64 + 128
+        ).astype(np.uint8)
+        front_image = (
+            np.stack([n.next(mask) for n in self.front_noises], axis=2) * 64 + 128
+        ).astype(np.uint8)
+
+        tmp = np.hstack((back_image, back_image))
+        left = tmp[:, : self.width, :]
+        right = tmp[:, self.width :, :]
+        for shift in range(self.shift):
+            shift += 1
+            mask = np.logical_and(
+                (shift / self.shift) <= frame, frame < (shift + 1) / self.shift
+            )
+            left[mask] = front_image[mask]
+            res_w = self.width - shift
+            res_mask = mask[:, shift:]
+            right[:, :res_w, :][res_mask] = front_image[:, shift:, :][res_mask]
+
+        left[self.anchor] = 255
+        right[self.anchor] = 255
+
+        return tmp
+    
+
 def get_video_info(input_file):
     """使用 ffprobe 获取视频信息"""
     cmd = f'ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of csv=p=0 "{input_file}"'
@@ -137,9 +121,7 @@ def get_video_info(input_file):
     return int(width), int(height), eval(fps)  # 安全地转换分数
 
 
-def process_videos(
-    input, output, target_height=360, frames=1_000_000, **kwargs
-):
+def process_videos(input, output, target_height=360, frames=1_000_000, **kwargs):
     # 获取视频信息（假设两个视频参数相同）
     w, h, fps = get_video_info(input)
     scale = target_height / h
@@ -168,7 +150,7 @@ def process_videos(
         "-preset",
         "medium",  # QSV 的 preset 可选：veryfast, faster, fast, medium, slow
         "-global_quality",
-        "1",  # 替代 crf（QSV 用 global_quality 控制质量，范围 1-51）
+        "10",  # 替代 crf（QSV 用 global_quality 控制质量，范围 1-51）
         "-look_ahead",
         "1",  # 可选：启用前瞻优化（0=关闭，1=开启）
         # "-c:v",
@@ -182,30 +164,39 @@ def process_videos(
 
     with sp.Popen(ffmpeg_cmd, stdout=sp.PIPE, stderr=sp.DEVNULL) as proc_in:
         with sp.Popen(output_cmd, stdin=sp.PIPE) as proc_out:
-            video = StereoVideo(h, w, fps, **kwargs)
+            filter = DualVideo(h, w, fps, **kwargs)
 
             for count in range(frames):
                 # 读取原始帧数据
                 raw = proc_in.stdout.read(frame_size)
                 if not raw:
                     break
-                frame = np.frombuffer(raw, dtype=np.uint8).reshape((h, w, 3))
-
                 # 转换为 numpy 数组
-                # 合并帧
-                merged = video.step((frame.mean(-1) < 128))
+                frame = np.frombuffer(raw, dtype=np.uint8).reshape((h, w, 3))
+                # 转换为灰度图像
+                frame = frame.mean(-1, dtype=np.float32)
 
-                cv2.imshow("Merged", merged)
+                # coords = generate_coords(h, w)
+                # dist = (((coords - [h / 2, w / 2])) ** 2).sum(axis=-1) ** 0.5
+                # frame = np.sin(dist * 0.2 + count * -0.1) * 128 + 128
+
+                cv2.imshow("input", frame.astype(np.uint8))
+                cv2.waitKey(1)
+
+                # 转换帧
+                result = filter.step(frame / 256)
+
+                cv2.imshow("result", result)
                 cv2.waitKey(1)
 
                 # 写入输出流
-                proc_out.stdin.write(merged.tobytes())
+                proc_out.stdin.write(result.tobytes())
 
 
 if __name__ == "__main__":
     process_videos(
-        r"E:\Videos\csy\material\BadApple\output_video.mp4",
+        r"badapple.mp4",
         "output.mp4",
         target_height=240,
-        frames=200,
+        # frames=200,
     )
