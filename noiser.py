@@ -1,12 +1,14 @@
 import numpy as np
-from enum import Enum
+from enum import Enum, auto
 from noise import pnoise3, snoise3
+from typing import Callable
 
 
 class Noise:
     class Type(Enum):
         PERLIN = pnoise3
         SIMPLEX = snoise3
+        NORMAL = np.random.rand()
 
     def __init__(
         self, height, width, scale=10.0, t_scale=10.0, octaves=1, type=Type.PERLIN
@@ -20,9 +22,15 @@ class Noise:
         self.x0, self.y0, self.t0 = np.random.rand(3) * 1e5
         self.t = 0
 
-        self.__vectorize = np.vectorize(
-            lambda x, y, t: self.type.value(x, y, t, octaves=self.octaves)
-        )
+        match type:
+            case Noise.Type.PERLIN | Noise.Type.SIMPLEX:
+                self.__vectorize = np.vectorize(
+                    lambda x, y, t: type.value(x, y, t, octaves=self.octaves)
+                )
+            case _:
+                self.__vectorize = lambda x, y, t: np.random.rand(
+                    *np.broadcast_shapes(x.shape, y.shape, t.shape)
+                )
 
     def get(
         self,
