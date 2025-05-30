@@ -1,7 +1,6 @@
 import numpy as np
-from enum import Enum, auto
+from enum import Enum
 from noise import pnoise3, snoise3
-from typing import Callable
 
 
 class Noise:

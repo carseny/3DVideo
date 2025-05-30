@@ -1,8 +1,8 @@
 import numpy as np
 import cv2
 
-from noiser import Noise, RGBNoise
-from video import get_video_info, Video
+from .noiser import Noise, RGBNoise
+from .video import get_video_info, Video
 
 chunk_size = 16384
 

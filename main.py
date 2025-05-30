@@ -1,4 +1,4 @@
-from filter import process_videos
+from modules import *
 
 
 if __name__ == "__main__":
