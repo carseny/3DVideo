@@ -2,7 +2,7 @@ from modules import *
 
 
 if __name__ == "__main__":
-    process_videos(
+    process_video(
         # 输入视频路径
         r"input.mp4",
         # 输出视频路径
@@ -10,12 +10,9 @@ if __name__ == "__main__":
         # 目标视频缩放高度
         target_height=360,
         # 需要处理的帧数，默认处理所有帧
-        frames=None,
-        # 是否使用intel qsv编码器
-        qsv=False,
+        num_frame=None,
         # 是否显示处理过程中的视频
         display=True,
-        
         # 立体图像分割数（大于1会有重影）
         split=5,
         # 最大偏移像素个数，控制视差大小
