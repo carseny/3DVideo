@@ -4,15 +4,9 @@
 
 ### 环境配置
 
-#### python 环境
-
-python 3.12.3
+python 3.12.9
 
 运行 `pip install -r requirements.txt`安装依赖库。
-
-#### 系统环境
-
-需安装 ffmpeg
 
 ### 运行方式
 
