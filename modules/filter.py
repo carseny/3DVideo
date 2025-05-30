@@ -1,5 +1,6 @@
 import numpy as np
 import cv2
+from tqdm import tqdm
 from typing import Any
 
 from .noiser import Noise, RGBNoise
@@ -149,12 +150,11 @@ def process_video(
         )
         writer.set(cv2.VIDEOWRITER_PROP_QUALITY, quality)
         try:
-            count = 0
-            while True:
-                count += 1
+            print("Processing... (Press Ctrl+C to stop)")
+            for _ in tqdm(range(num_frame)):
                 ret, frame = cap.read()
-                if not ret or count > num_frame:
-                    break
+                if not ret:
+                    raise EOFError("Failed to read a frame.")
 
                 # 转换为灰度图像
                 frame = cv2.resize(frame, (w, h))
