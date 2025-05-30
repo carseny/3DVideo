@@ -3,7 +3,6 @@ import cv2
 from typing import Any
 
 from .noiser import Noise, RGBNoise
-from .video import get_video_info, Video
 
 __all__ = ["StereoVideo", "process_video"]
 chunk_size = 16384
@@ -128,63 +127,56 @@ def process_video(
     target_height=None,
     num_frame: int | None = None,
     display=False,
+    quality=100,
     **kwargs,
 ):
-    # 获取视频信息（假设两个视频参数相同）
-    w, h, fps = get_video_info(input)
-    if target_height is not None:
-        w, h = int(w * target_height / h), target_height
+    cap = cv2.VideoCapture(input)
+    try:
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if num_frame is None:
+            num_frame = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if target_height is not None:
+            w, h = int(w * target_height / h), target_height
+        filter = StereoVideo(h, w, fps, **kwargs)
 
-    filter = StereoVideo(h, w, fps, **kwargs)
+        writer = cv2.VideoWriter(
+            output,
+            cv2.VideoWriter.fourcc(*"mp4v"),
+            fps,
+            filter.result_shape[::-1],
+        )
+        writer.set(cv2.VIDEOWRITER_PROP_QUALITY, quality)
+        try:
+            count = 0
+            while True:
+                count += 1
+                ret, frame = cap.read()
+                if not ret or count > num_frame:
+                    break
 
-    input_kwargs = {"input_file": input, "output_args": {"vf": f"scale={w}:{h}"}}
-    output_kwargs = {
-        "output_file": output,
-        "input_args": {
-            "s": f"{'x'.join(map(str, filter.result_shape[1::-1]))}",
-            "r": f"{fps}",
-        },
-        "output_args": {},
-    }
-    if qsv:
-        # intel qsv encoder
-        output_kwargs["output_args"] |= {
-            "c:v": "h264_qsv",
-            "preset": "slow",
-            "global_quality": "10",
-            "look_ahead": "1",
-        }
-    else:
-        # libvpx encoder
-        output_kwargs["output_args"] |= {
-            "c:v": "libx264",
-            "preset": "slow",
-            "crf": "10",
-        }
-    input_Video = Video(**input_kwargs)
-    output_Video = Video(**output_kwargs)
+                # 转换为灰度图像
+                frame = cv2.resize(frame, (w, h))
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    with input_Video as video_in, output_Video as video_out:
-        count = 0
-        for frame in video_in:
-            count += 1
-            if frames is not None and count > frames:
-                break
+                if display:
+                    cv2.imshow("input", frame)
+                    cv2.waitKey(1)
 
-            # 转换为灰度图像，归一化
-            frame = frame.mean(-1, dtype=np.float32) / 256
+                # 归一化
+                frame = frame.astype(np.float32) / 255
 
-            if display:
-                cv2.imshow("input", frame)
-                cv2.waitKey(1)
+                # 转换帧
+                frame = filter.apply(frame)
 
-            # 转换帧
-            output = filter.apply(frame)
-
-            if display:
-                cv2.imshow("output", output)
-                cv2.waitKey(1)
-
-            output = (output * 256).astype(np.uint8)
-            # 写入输出流
-            video_out.write(output)
+                frame = (frame * 256).astype(np.uint8)
+                if display:
+                    cv2.imshow("output", frame)
+                    cv2.waitKey(1)
+                # 写入输出流
+                writer.write(frame)
+        finally:
+            writer.release()
+    finally:
+        cap.release()
